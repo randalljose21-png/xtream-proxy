@@ -1,21 +1,74 @@
 import express from 'express';
 import { gotScraping } from 'got-scraping';
+import { readFileSync } from 'node:fs';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const API_KEYS = (process.env.API_KEYS || '')
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean);
+// Internal token shared with master-admin's /admin/api/validate_key.php
+const INTERNAL_TOKEN = (() => {
+  try { return readFileSync('/opt/master-admin-internal.token', 'utf8').trim(); }
+  catch { return ''; }
+})();
 
-function requireApiKey(req, res, next) {
-  if (!API_KEYS.length) return next();
-  const key = req.query.api_key || req.get('x-api-key') || '';
-  if (!API_KEYS.includes(key)) {
-    return res.status(401).json({ error: 'invalid or missing api_key' });
+const VALIDATOR_URL = process.env.VALIDATOR_URL || 'http://127.0.0.1/admin/api/validate_key.php';
+
+// Tiny in-memory positive-cache so we don't pound the master on bursty traffic.
+const validateCache = new Map();
+const VALIDATE_CACHE_MS = 5000;
+
+async function validateKey(payload) {
+  const cacheKey = `${payload.api_key}|${payload.domain || ''}|${payload.service || ''}`;
+  const cached = validateCache.get(cacheKey);
+  if (cached && Date.now() - cached.t < VALIDATE_CACHE_MS) {
+    return cached.v;
   }
-  next();
+
+  if (!INTERNAL_TOKEN) {
+    return { allowed: false, reason: 'internal token missing' };
+  }
+
+  try {
+    const r = await fetch(VALIDATOR_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Internal-Token': INTERNAL_TOKEN },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(5000),
+    });
+    const j = await r.json();
+    const v = { allowed: !!j.allowed, reason: j.reason || null, license_id: j.license_id || null };
+    if (v.allowed) validateCache.set(cacheKey, { t: Date.now(), v });
+    return v;
+  } catch (err) {
+    return { allowed: false, reason: 'validator unreachable: ' + err.message };
+  }
+}
+
+function requireApiKey(service) {
+  return async (req, res, next) => {
+    const key = (req.query.api_key || req.get('x-api-key') || '').trim();
+    if (!key) return res.status(401).json({ error: 'missing api_key' });
+
+    const domain = (req.query.domain || req.get('x-forwarded-host') || req.get('host') || '').split(':')[0];
+    const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress || '';
+    const ua = (req.get('user-agent') || '').slice(0, 500);
+
+    const v = await validateKey({
+      api_key: key,
+      service,
+      endpoint: req.path,
+      domain,
+      ip,
+      user_agent: ua,
+      status_code: 200,
+    });
+
+    if (!v.allowed) {
+      return res.status(401).json({ error: 'forbidden', reason: v.reason });
+    }
+    req.licenseId = v.license_id;
+    next();
+  };
 }
 
 const cache = new Map();
@@ -44,7 +97,7 @@ async function fetchXtream(url) {
   }
 }
 
-app.get('/test', requireApiKey, async (req, res) => {
+app.get('/test', requireApiKey('buscador'), async (req, res) => {
   const { username, password, baseurl } = req.query;
   if (!username || !password || !baseurl) {
     return res.status(400).json({ error: 'missing params' });
@@ -54,7 +107,7 @@ app.get('/test', requireApiKey, async (req, res) => {
   res.json({ status: out.status, error: out.error || null, sample: (out.body || '').slice(0, 400) });
 });
 
-app.get('/buscador', requireApiKey, async (req, res) => {
+app.get('/buscador', requireApiKey('buscador'), async (req, res) => {
   const { username, password, baseurl, tipoid = '0', search = '' } = req.query;
   if (!username || !password || !baseurl) {
     return res.status(400).json({ error: 'missing params' });
