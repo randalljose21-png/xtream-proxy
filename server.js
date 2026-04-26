@@ -4,6 +4,20 @@ import { gotScraping } from 'got-scraping';
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+const API_KEYS = (process.env.API_KEYS || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+function requireApiKey(req, res, next) {
+  if (!API_KEYS.length) return next();
+  const key = req.query.api_key || req.get('x-api-key') || '';
+  if (!API_KEYS.includes(key)) {
+    return res.status(401).json({ error: 'invalid or missing api_key' });
+  }
+  next();
+}
+
 const cache = new Map();
 const CACHE_TTL = 30 * 60 * 1000;
 
@@ -30,7 +44,7 @@ async function fetchXtream(url) {
   }
 }
 
-app.get('/test', async (req, res) => {
+app.get('/test', requireApiKey, async (req, res) => {
   const { username, password, baseurl } = req.query;
   if (!username || !password || !baseurl) {
     return res.status(400).json({ error: 'missing params' });
@@ -40,7 +54,7 @@ app.get('/test', async (req, res) => {
   res.json({ status: out.status, error: out.error || null, sample: (out.body || '').slice(0, 400) });
 });
 
-app.get('/buscador', async (req, res) => {
+app.get('/buscador', requireApiKey, async (req, res) => {
   const { username, password, baseurl, tipoid = '0', search = '' } = req.query;
   if (!username || !password || !baseurl) {
     return res.status(400).json({ error: 'missing params' });
