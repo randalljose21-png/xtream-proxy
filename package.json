@@ -1,0 +1,17 @@
+{
+  "name": "xtream-proxy",
+  "version": "1.0.0",
+  "description": "Xtream Codes proxy with TLS fingerprint impersonation to bypass anti-bot WAFs",
+  "main": "server.js",
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "got-scraping": "^4.0.4"
+  }
+}
